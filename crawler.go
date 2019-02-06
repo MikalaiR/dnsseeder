@@ -1,8 +1,7 @@
 package main
 
 import (
-	"errors"
-	"log"
+	"fmt"
 	"net"
 	"strconv"
 	"time"
@@ -10,19 +9,9 @@ import (
 	"github.com/btcsuite/btcd/wire"
 )
 
-type crawlError struct {
-	errLoc string
-	Err    error
-}
-
-// Error returns a formatted error about a crawl
-func (e *crawlError) Error() string {
-	return "err: " + e.errLoc + ": " + e.Err.Error()
-}
-
 // crawlNode runs in a goroutine, crawls the remote ip and updates the master
 // list of currently active addresses
-func crawlNode(rc chan *result, s *dnsseeder, nd *node) {
+func crawlNode(rc chan *result, s *DNSSeeder, nd *node) {
 
 	res := &result{
 		node: net.JoinHostPort(nd.na.IP.String(), strconv.Itoa(int(nd.na.Port))),
@@ -34,133 +23,110 @@ func crawlNode(rc chan *result, s *dnsseeder, nd *node) {
 	// all done so push the result back to the seeder.
 	//This will block until the seeder reads the result
 	rc <- res
-
-	// goroutine will end and be cleaned up
 }
 
 // crawlIP retrievs a slice of ip addresses from a client
-func crawlIP(s *dnsseeder, r *result) ([]*wire.NetAddress, *crawlError) {
-
+func crawlIP(s *DNSSeeder, r *result) ([]*wire.NetAddress, error) {
 	conn, err := net.DialTimeout("tcp", r.node, time.Second*10)
 	if err != nil {
-		if config.debug {
-			log.Printf("%s - debug - Could not connect to %s - %v\n", s.name, r.node, err)
+		return nil, fmt.Errorf("cannot connect to remote node: %v", err)
+	}
+
+	defer func() {
+		err := conn.Close()
+		if err != nil {
+			s.log.Warnf("Error disconnecting from %s: %v", r.node, err)
+		} else {
+			s.log.Debugf("Successfully disconnected from %s", r.node)
 		}
-		return nil, &crawlError{"", err}
-	}
+	}()
 
-	defer conn.Close()
-	if config.debug {
-		log.Printf("%s - debug - Connected to remote address: %s\n", s.name, r.node)
-	}
+	s.log.Debugf("Connected to remote address %v", r.node)
 
-	// set a deadline for all comms to be done by. After this all i/o will error
-	conn.SetDeadline(time.Now().Add(time.Second * maxTo))
-
-	// First command to remote end needs to be a version command
-	// last parameter is lastblock
-	msgver, err := wire.NewMsgVersionFromConn(conn, nounce, 0)
+	err = conn.SetDeadline(time.Now().Add(time.Second * maxTo))
 	if err != nil {
-		return nil, &crawlError{"Create NewMsgVersionFromConn", err}
+		return nil, fmt.Errorf("cannot set connection deadline: %v", err)
 	}
 
-	err = wire.WriteMessage(conn, msgver, s.pver, s.id)
+	msgver := wire.NewMsgVersion(&wire.NetAddress{}, &wire.NetAddress{}, nounce, 0)
+	msgver.AddService(wire.SFNodeNetwork | wire.SFNodeWitness | wire.SFNodeBloom)
+
+	err = wire.WriteMessage(conn, msgver, s.NetVer, s.ID)
 	if err != nil {
-		// Log and handle the error
-		return nil, &crawlError{"Write Version Message", err}
+		return nil, fmt.Errorf("cannot send version message: %v", err)
 	}
 
-	// first message received should be version
-	msg, _, err := wire.ReadMessage(conn, s.pver, s.id)
+	msg, _, err := wire.ReadMessage(conn, s.NetVer, s.ID)
 	if err != nil {
-		// Log and handle the error
-		return nil, &crawlError{"Read message after sending Version", err}
+		return nil, fmt.Errorf("cannot receive Ver message: %v", err)
 	}
 
 	switch msg := msg.(type) {
 	case *wire.MsgVersion:
-		// The message is a pointer to a MsgVersion struct.
-		if config.debug {
-			log.Printf("%s - debug - %s - Remote version: %v\n", s.name, r.node, msg.ProtocolVersion)
-		}
-		// fill the node struct with the remote details
+		s.log.Debugf("Node %s version is %d (%s), services is %d", r.node, msg.ProtocolVersion, msg.UserAgent, msg.Services)
+
 		r.version = msg.ProtocolVersion
 		r.services = msg.Services
-		r.lastBlock = msg.LastBlock
-		r.strVersion = msg.UserAgent
 	default:
-		return nil, &crawlError{"Did not receive expected Version message from remote client", errors.New("")}
+		return nil, fmt.Errorf("did not receive Version message from remote node")
 	}
 
-	// send verack command
 	msgverack := wire.NewMsgVerAck()
 
-	err = wire.WriteMessage(conn, msgverack, s.pver, s.id)
+	err = wire.WriteMessage(conn, msgverack, s.NetVer, s.ID)
 	if err != nil {
-		return nil, &crawlError{"writing message VerAck", err}
+		return nil, fmt.Errorf("cannot send VerAck message: %v", err)
 	}
 
-	// second message received should be verack
-	msg, _, err = wire.ReadMessage(conn, s.pver, s.id)
+	msg, _, err = wire.ReadMessage(conn, s.NetVer, s.ID)
 	if err != nil {
-		return nil, &crawlError{"reading expected Ver Ack from remote client", err}
+		return nil, fmt.Errorf("cannot receive VerAck message: %v", err)
 	}
 
 	switch msg.(type) {
 	case *wire.MsgVerAck:
-		if config.debug {
-			log.Printf("%s - debug - %s - received Version Ack\n", s.name, r.node)
-		}
+		s.log.Debugf("Received VerAck from %s", r.node)
 	default:
-		return nil, &crawlError{"Did not receive expected Ver Ack message from remote client", errors.New("")}
+		return nil, fmt.Errorf("did not receive VerAck message from remote node")
 	}
 
 	// if we get this far and if the seeder is full then don't ask for addresses. This will reduce bandwith usage while still
 	// confirming that we can connect to the remote node
-	if len(s.theList) > s.maxSize {
+	/* if len(s.nodes) > s.maxSize {
 		return nil, nil
-	}
+	}*/
 	// send getaddr command
-	msgGetAddr := wire.NewMsgGetAddr()
 
-	err = wire.WriteMessage(conn, msgGetAddr, s.pver, s.id)
+	msgGetAddr := wire.NewMsgGetAddr()
+	err = wire.WriteMessage(conn, msgGetAddr, s.NetVer, s.ID)
 	if err != nil {
-		return nil, &crawlError{"writing Addr message to remote client", err}
+		return nil, fmt.Errorf("cannot send GetAddr message: %v", err)
 	}
 
-	c := 0
-	dowhile := true
-	for dowhile == true {
-
-		// Using the Bitcoin lib for the some networks means it does not understand some
-		// of the commands and will error. We can ignore these as we are only
-		// interested in the addr message and its content.
-		msgaddr, _, _ := wire.ReadMessage(conn, s.pver, s.id)
-		if msgaddr != nil {
-			switch msg := msgaddr.(type) {
-			case *wire.MsgAddr:
-				// received the addr message so return the result
-				if config.debug {
-					log.Printf("%s - debug - %s - received valid addr message\n", s.name, r.node)
-				}
-				dowhile = false
-				return msg.AddrList, nil
-			default:
-				if config.debug {
-					log.Printf("%s - debug - %s - ignoring message - %v\n", s.name, r.node, msg.Command())
-				}
+	for i := 0; i < 25; i++ {
+		msgaddr, _, err := wire.ReadMessage(conn, s.NetVer, s.ID)
+		if err != nil {
+			s.log.Debugf("cannot receive message: %v; %v", err, msgaddr)
+			if msgaddr == nil {
+				return nil, fmt.Errorf("cannot receive message: %v", err)
 			}
 		}
-		// if we get more than 25 messages before the addr we asked for then give up on this client
-		if c++; c >= 25 {
-			dowhile = false
+
+		switch msg := msgaddr.(type) {
+		case *wire.MsgAddr:
+			s.log.Debugf("Received Addr message from %v", r.node)
+			return msg.AddrList, nil
+
+		case *wire.MsgPing:
+			msgPong := wire.NewMsgPong(msg.Nonce)
+			err = wire.WriteMessage(conn, msgPong, s.NetVer, s.ID)
+			if err != nil {
+				return nil, fmt.Errorf("cannot send Pong message: %v", err)
+			}
+		default:
+			s.log.Debugf("Received unexpected %v message from %v", msg.Command(), r.node)
 		}
 	}
 
-	// received too many messages before requested Addr
-	return nil, &crawlError{"message loop - did not receive remote addresses in first 25 messages from remote client", errors.New("")}
+	return nil, fmt.Errorf("didn't receive Addr message in first 25 messages")
 }
-
-/*
-
- */

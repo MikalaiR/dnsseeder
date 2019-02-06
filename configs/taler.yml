@@ -1,0 +1,21 @@
+name: Taler
+id: 0xd873b164
+port: 23153
+network_version: 70020
+dns_name: dnsseed.mikalair.me.
+dns_server: s.mikalair.me.
+ttl: 600
+soa_mbox: hostmaster.mikalair.me
+seeders:
+ - dnsseed.taler.site
+ - dnsseed.talercrypto.com
+ - dnsseed.mikalair.me
+#initial_nodes:
+# - d
+allowed_service_filters:
+ - 0x1
+ - 0x5
+ - 0x9
+ - 0xb
+ - 0xd
+ - 0xf

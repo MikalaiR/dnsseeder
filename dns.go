@@ -1,171 +1,144 @@
 package main
 
 import (
-	"log"
-	//	"sync"
-
+	"fmt"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/miekg/dns"
+	log "github.com/sirupsen/logrus"
+	"strconv"
+	"time"
 )
 
 // updateDNS updates the current slices of dns.RR so incoming requests get a
 // fast answer
-func updateDNS(s *dnsseeder) {
-
-	var rr4std, rr4non, rr6std, rr6non []dns.RR
-
+func updateDNS(s *DNSSeeder) {
 	s.mtx.RLock()
 
-	// loop over each dns recprd type we need
-	for t := range []int{dnsV4Std, dnsV4Non, dnsV6Std, dnsV6Non} {
-		// FIXME above needs to be convertwd into one scan of theList if possible
-
-		numRR := 0
-
-		for _, nd := range s.theList {
-			// when we reach max exit
-			if numRR >= 25 {
-				break
-			}
-
-			if nd.status != statusCG {
-				continue
-			}
-
-			if t == dnsV4Std || t == dnsV4Non {
-				if t == dnsV4Std && nd.dnsType == dnsV4Std {
-					r := new(dns.A)
-					r.Hdr = dns.RR_Header{Name: s.dnsHost + ".", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: s.ttl}
-					r.A = nd.na.IP
-					rr4std = append(rr4std, r)
-					numRR++
-				}
-
-				// if the node is using a non standard port then add the encoded port info to DNS
-				if t == dnsV4Non && nd.dnsType == dnsV4Non {
-					r := new(dns.A)
-					r.Hdr = dns.RR_Header{Name: "nonstd." + s.dnsHost + ".", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: s.ttl}
-					r.A = nd.na.IP
-					rr4non = append(rr4non, r)
-					numRR++
-					r = new(dns.A)
-					r.Hdr = dns.RR_Header{Name: "nonstd." + s.dnsHost + ".", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: s.ttl}
-					r.A = nd.nonstdIP
-					rr4non = append(rr4non, r)
-					numRR++
-				}
-			}
-			if t == dnsV6Std || t == dnsV6Non {
-				if t == dnsV6Std && nd.dnsType == dnsV6Std {
-					r := new(dns.AAAA)
-					r.Hdr = dns.RR_Header{Name: s.dnsHost + ".", Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: s.ttl}
-					r.AAAA = nd.na.IP
-					rr6std = append(rr6std, r)
-					numRR++
-				}
-				// if the node is using a non standard port then add the encoded port info to DNS
-				if t == dnsV6Non && nd.dnsType == dnsV6Non {
-					r := new(dns.AAAA)
-					r.Hdr = dns.RR_Header{Name: "nonstd." + s.dnsHost + ".", Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: s.ttl}
-					r.AAAA = nd.na.IP
-					rr6non = append(rr6non, r)
-					numRR++
-					r = new(dns.AAAA)
-					r.Hdr = dns.RR_Header{Name: "nonstd." + s.dnsHost + ".", Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: s.ttl}
-					r.AAAA = nd.nonstdIP
-					rr6non = append(rr6non, r)
-					numRR++
-				}
-			}
-
+	newState := newEmptyDNSState()
+	for _, node := range s.nodes {
+		if node.status != statusCG {
+			continue
 		}
 
-	}
+		switch node.dnsType {
+		case dns.TypeA:
+			r := &dns.A{}
+			r.Hdr = dns.RR_Header{Name: s.DNSName, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: s.TTL}
+			r.A = node.na.IP
 
+			if len(newState.ByServices[dns.TypeA][0]) < 25 {
+				newState.ByServices[dns.TypeA][0] = append(newState.ByServices[dns.TypeA][0], r)
+			}
+
+			for _, svc := range s.AllowedServiceFilter {
+				if node.services&svc != 0 && len(newState.ByServices[dns.TypeA][svc]) < 25 {
+
+					r2 := &dns.A{}
+					r2.Hdr = dns.RR_Header{
+						Name:   fmt.Sprintf("x%d.%s", svc, s.DNSName),
+						Rrtype: dns.TypeA,
+						Class:  dns.ClassINET,
+						Ttl:    s.TTL,
+					}
+
+					r2.A = node.na.IP
+
+					newState.ByServices[dns.TypeA][svc] = append(newState.ByServices[dns.TypeA][svc], r2)
+				}
+			}
+		case dns.TypeAAAA:
+			r := &dns.AAAA{}
+			r.Hdr = dns.RR_Header{Name: s.DNSName, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: s.TTL}
+			r.AAAA = node.na.IP
+
+			if len(newState.ByServices[dns.TypeAAAA][0]) < 25 {
+				newState.ByServices[dns.TypeAAAA][0] = append(newState.ByServices[dns.TypeAAAA][0], r)
+			}
+
+			for _, svc := range s.AllowedServiceFilter {
+				if node.services&svc != 0 && len(newState.ByServices[dns.TypeA][svc]) < 25 {
+
+					r2 := &dns.AAAA{}
+					r2.Hdr = dns.RR_Header{
+						Name:   fmt.Sprintf("x%d.%s", svc, s.DNSName),
+						Rrtype: dns.TypeAAAA,
+						Class:  dns.ClassINET,
+						Ttl:    s.TTL,
+					}
+
+					r2.AAAA = node.na.IP
+					newState.ByServices[dns.TypeAAAA][svc] = append(newState.ByServices[dns.TypeAAAA][svc], r2)
+				}
+			}
+		}
+	}
 	s.mtx.RUnlock()
 
-	config.dnsmtx.Lock()
+	s.dnsLock.Lock()
+	s.dns = newState
+	s.dnsLock.Unlock()
+}
 
-	// update the map holding the details for this seeder
-	for t := range []int{dnsV4Std, dnsV4Non, dnsV6Std, dnsV6Non} {
-		switch t {
-		case dnsV4Std:
-			config.dns[s.dnsHost+".A"] = rr4std
-		case dnsV4Non:
-			config.dns["nonstd."+s.dnsHost+".A"] = rr4non
-		case dnsV6Std:
-			config.dns[s.dnsHost+".AAAA"] = rr6std
-		case dnsV6Non:
-			config.dns["nonstd."+s.dnsHost+".AAAA"] = rr6non
+func wrapHandler(s *DNSSeeder) dns.HandlerFunc {
+	return func(w dns.ResponseWriter, msg *dns.Msg) {
+		m := &dns.Msg{MsgHdr: dns.MsgHdr{
+			Authoritative:      true,
+			RecursionAvailable: false,
+		}}
+		m.SetReply(msg)
+
+		question := msg.Question[0]
+
+		ns := &dns.NS{}
+		ns.Hdr = dns.RR_Header{Name: question.Name, Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: s.TTL}
+		ns.Ns = s.DNSServer
+
+		soa := &dns.SOA{}
+		soa.Hdr = dns.RR_Header{Name: question.Name, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: s.TTL}
+		soa.Serial = uint32(time.Now().Unix())
+		soa.Ns = s.DNSServer
+		soa.Mbox = s.SOAMbox
+		soa.Refresh = 604800
+		soa.Retry = 86400
+		soa.Expire = 2592000
+		soa.Minttl = 604800
+
+		if question.Qtype == dns.TypeA || question.Qtype == dns.TypeAAAA {
+			s.dnsLock.RLock()
+			if question.Name[0] == 'x' {
+				filter, _ := strconv.ParseUint(question.Name[1:2], 16, 16)
+				m.Answer = s.dns.ByServices[question.Qtype][wire.ServiceFlag(filter)]
+			} else {
+				m.Answer = s.dns.ByServices[question.Qtype][0]
+			}
+			s.dnsLock.RUnlock()
+		} else if question.Qtype == dns.TypeNS {
+			m.Answer = append(m.Answer, ns)
+		} else if question.Qtype == dns.TypeSOA {
+			m.Answer = append(m.Answer, soa)
+		}
+
+		if len(m.Answer) == 0 {
+			m.Ns = append(m.Ns, soa)
+		} else {
+			m.Ns = append(m.Ns, ns)
+		}
+
+		err := w.WriteMsg(m)
+
+		if err != nil {
+			s.log.Debugf("Cannot send DNS response: %v", err)
 		}
 	}
-
-	config.dnsmtx.Unlock()
-
-	if config.stats {
-		s.counts.mtx.RLock()
-		log.Printf("%s - DNS available: v4std: %v v4non: %v v6std: %v v6non: %v\n", s.name, len(rr4std), len(rr4non), len(rr6std), len(rr6non))
-		log.Printf("%s - DNS counts: v4std: %v v4non: %v v6std: %v v6non: %v total: %v\n",
-			s.name,
-			s.counts.DNSCounts[dnsV4Std],
-			s.counts.DNSCounts[dnsV4Non],
-			s.counts.DNSCounts[dnsV6Std],
-			s.counts.DNSCounts[dnsV6Non],
-			s.counts.DNSCounts[dnsV4Std]+s.counts.DNSCounts[dnsV4Non]+s.counts.DNSCounts[dnsV6Std]+s.counts.DNSCounts[dnsV6Non])
-
-		s.counts.mtx.RUnlock()
-
-	}
 }
 
-// handleDNS processes a DNS request from remote client and returns
-// a list of current ip addresses that the crawlers consider current.
-func handleDNS(w dns.ResponseWriter, r *dns.Msg) {
-
-	m := &dns.Msg{MsgHdr: dns.MsgHdr{
-		Authoritative:      true,
-		RecursionAvailable: false,
-	}}
-	m.SetReply(r)
-
-	var qtype string
-
-	switch r.Question[0].Qtype {
-	case dns.TypeA:
-		qtype = "A"
-	case dns.TypeAAAA:
-		qtype = "AAAA"
-	case dns.TypeTXT:
-		qtype = "TXT"
-	case dns.TypeMX:
-		qtype = "MX"
-	case dns.TypeNS:
-		qtype = "NS"
-	default:
-		qtype = "UNKNOWN"
-	}
-
-	config.dnsmtx.RLock()
-	// if the dns map does not have a key for the request it will return an empty slice
-	m.Answer = config.dns[r.Question[0].Name+qtype]
-	config.dnsmtx.RUnlock()
-
-	w.WriteMsg(m)
-
-	if config.debug {
-		log.Printf("debug - DNS response Type: standard  To IP: %s  Query Type: %s\n", w.RemoteAddr().String(), qtype)
-	}
-	// update the stats in a goroutine
-	go updateDNSCounts(r.Question[0].Name, qtype)
+func dnsInitSeeder(seeder *DNSSeeder) {
+	dns.HandleFunc(seeder.DNSName, wrapHandler(seeder))
 }
 
-// serve starts the requested DNS server listening on the requested port
-func serve(net, port string) {
-	server := &dns.Server{Addr: ":" + port, Net: net, TsigSecret: nil}
+func serve(net, listen string) {
+	server := &dns.Server{Addr: listen, Net: net, TsigSecret: nil}
 	if err := server.ListenAndServe(); err != nil {
-		log.Printf("Failed to setup the "+net+" server: %v\n", err)
+		log.Errorf("Failed to setup %s server: %v", net, err)
 	}
 }
-
-/*
-
- */

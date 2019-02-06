@@ -1,0 +1,19 @@
+name: Bitcoin
+id: 0xd9b4bef9
+port: 8333
+network_version: 70015
+dns_name: btcseed.zagbot.com
+ttl: 600
+seeders:
+ - dnsseed.bluematt.me
+ - bitseed.xf2.org
+ - dnsseed.bitcoin.dashjr.org
+initial_nodes:
+ - 127.0.0.1
+allowed_service_filters:
+ - 0x1
+ - 0x5
+ - 0x9
+ - 0xb
+ - 0xd
+ - 0xf
