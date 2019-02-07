@@ -233,12 +233,11 @@ func (s *DNSSeeder) processResult(r *result) {
 
 	// succesful connection and addresses received so mark status
 	nd.status = statusCG
-	cs := nd.lastConnect
 	nd.rating = 0
 	nd.connectFails = 0
-	nd.lastConnect = time.Now()
-	nd.lastTry = nd.lastConnect
-	nd.services = r.services
+	nd.na.Timestamp = time.Now()
+	nd.lastTry = nd.na.Timestamp
+	nd.na.Services = r.services
 
 	added := 0
 
@@ -258,15 +257,7 @@ func (s *DNSSeeder) processResult(r *result) {
 		}
 	}
 
-	s.log.Debugf("Crawl done: node: %s s:r:f: %v:%v:%v addr: %v:%v Last connect: %v ago",
-		nd.na.IP,
-		nd.status,
-		nd.rating,
-		nd.connectFails,
-		len(r.nas),
-		added,
-		time.Since(cs).String())
-
+	s.log.Debugf("Crawl %s done: added %d nodes", nd.na.IP, added)
 }
 
 // crawlEnd is run as a defer to make sure node status is correctly updated
@@ -278,6 +269,10 @@ func crawlEnd(nd *node) {
 func (s *DNSSeeder) addNa(nNa *wire.NetAddress) bool {
 
 	if len(s.nodes) > s.maxSize {
+		return false
+	}
+
+	if nNa.Port != s.Port {
 		return false
 	}
 
@@ -295,10 +290,9 @@ func (s *DNSSeeder) addNa(nNa *wire.NetAddress) bool {
 	}
 
 	nt := node{
-		na:          nNa,
-		lastConnect: time.Now(),
-		status:      statusRG,
-		dnsType:     dns.TypeA,
+		na:      nNa,
+		status:  statusRG,
+		dnsType: dns.TypeA,
 	}
 
 	// select the dns type based on the remote address type and port

@@ -16,9 +16,9 @@ import (
 
 // configData holds information on the application
 type configData struct {
-	listen   string                // port for the dns server to listen on
-	seeders  map[string]*DNSSeeder // holds a pointer to all the current seeders
-	loglevel string                // debug cmdline option
+	listen   string       // port for the dns server to listen on
+	seeders  []*DNSSeeder // holds a pointer to all the current seeders
+	loglevel string       // debug cmdline option
 }
 
 var config configData
@@ -44,18 +44,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	config.seeders = make(map[string]*DNSSeeder)
-
 	for _, v := range netwFiles {
 		net, err := loadNetwork(v)
 		if err != nil {
-			fmt.Printf("Error loading data from netfile %s - %v\n", net, err)
-			os.Exit(1)
+			log.Errorf("Error loading data from netfile %s - %v", v, err)
+			continue
 		}
 
 		dnsInitSeeder(net)
-		config.seeders[net.Name] = net
-		log.Printf("status - system is configured for network: %s\n", net.Name)
+		config.seeders = append(config.seeders, net)
+		log.Infof("System is configured for network: %s", net.Name)
 	}
 
 	// start dns server
