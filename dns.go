@@ -35,7 +35,7 @@ func updateDNS(s *DNSSeeder) {
 
 					r2 := &dns.A{}
 					r2.Hdr = dns.RR_Header{
-						Name:   fmt.Sprintf("x%x.%s", svc, s.DNSName),
+						Name:   fmt.Sprintf("x%x.%s", int(svc), s.DNSName),
 						Rrtype: dns.TypeA,
 						Class:  dns.ClassINET,
 						Ttl:    s.TTL,
@@ -60,7 +60,7 @@ func updateDNS(s *DNSSeeder) {
 
 					r2 := &dns.AAAA{}
 					r2.Hdr = dns.RR_Header{
-						Name:   fmt.Sprintf("x%x.%s", svc, s.DNSName),
+						Name:   fmt.Sprintf("x%x.%s", int(svc), s.DNSName),
 						Rrtype: dns.TypeAAAA,
 						Class:  dns.ClassINET,
 						Ttl:    s.TTL,
